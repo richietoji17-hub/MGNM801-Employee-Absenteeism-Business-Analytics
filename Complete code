@@ -1,0 +1,1349 @@
+
+
+%pip -q install ucimlrepo
+
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from ucimlrepo import fetch_ucirepo
+
+from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_auc_score,
+    confusion_matrix,
+    ConfusionMatrixDisplay,
+    classification_report
+)
+
+print("OUTPUT – STEP 1")
+print("----------------")
+print("Libraries imported successfully.")
+print("Ready for data collection.")
+
+
+# ============================================================
+# STEP 2 – LOAD THE GENUINE UCI DATASET
+# ============================================================
+
+absenteeism_at_work = fetch_ucirepo(id=445)
+
+X_uci = absenteeism_at_work.data.features.copy()
+y_uci = absenteeism_at_work.data.targets.copy()
+
+df = pd.concat([X_uci, y_uci], axis=1)
+
+# IMPORTANT:
+# The UCI data returned by ucimlrepo may contain a trailing space
+# in the workload column name. This line removes spaces around
+# every column name so the rest of the code works consistently.
+df.columns = df.columns.str.strip()
+
+TARGET = "Absenteeism time in hours"
+WORKLOAD = "Work load Average/day"
+
+print("\nOUTPUT – STEP 2")
+print("----------------")
+print("Dataset shape:", df.shape)
+print("Number of records:", len(df))
+print("Number of columns:", len(df.columns))
+print("\nColumn names:")
+print(df.columns.tolist())
+
+print("\nFirst five records:")
+display(df.head())
+
+print(
+    "\nInterpretation:"
+    "\nThe genuine UCI Absenteeism at Work dataset has been loaded directly "
+    "from the UCI repository. No fictional employee records have been added."
+)
+
+
+# ============================================================
+# STEP 3 – INITIAL DATA EXPLORATION
+# ============================================================
+
+print("\nOUTPUT – STEP 3")
+print("----------------")
+print("FIRST FIVE RECORDS")
+display(df.head())
+
+print("\nDATA TYPES")
+print(df.dtypes)
+
+print("\nDESCRIPTIVE STATISTICS")
+display(df.describe().T)
+
+print("\nDATASET SHAPE")
+print(df.shape)
+
+print(
+    "\nInterpretation:"
+    "\nInitial exploration confirms the size, structure and data types "
+    "before cleaning and modelling."
+)
+
+
+# ============================================================
+# STEP 4 – DATA QUALITY CHECKS
+# ============================================================
+
+# Convert important numerical fields safely.
+df[TARGET] = pd.to_numeric(df[TARGET], errors="coerce")
+df[WORKLOAD] = pd.to_numeric(df[WORKLOAD], errors="coerce")
+
+missing_values = df.isnull().sum()
+duplicate_rows = df.duplicated().sum()
+
+print("\nOUTPUT – STEP 4")
+print("----------------")
+print("Missing values by column:")
+display(missing_values.to_frame("Missing values"))
+
+print("Duplicate rows:", duplicate_rows)
+print("Missing values in target:", df[TARGET].isnull().sum())
+
+print(
+    "\nInterpretation:"
+    "\nUCI reports no missing values for the dataset. The code verifies this "
+    "after importing the data. Duplicate records are reported rather than "
+    "automatically deleted, because repeated records should be reviewed carefully."
+)
+
+
+# ============================================================
+# STEP 5 – SIMPLE FEATURE ENGINEERING
+# ============================================================
+
+df["AgeGroup"] = pd.cut(
+    df["Age"],
+    bins=[17, 25, 35, 45, 55, 100],
+    labels=["18-25", "26-35", "36-45", "46-55", "56+"]
+)
+
+df["DistanceGroup"] = pd.cut(
+    df["Distance from Residence to Work"],
+    bins=[-np.inf, 10, 25, 50, np.inf],
+    labels=["Short", "Moderate", "Long", "Very long"]
+)
+
+df["WorkloadGroup"] = pd.qcut(
+    df[WORKLOAD],
+    q=4,
+    duplicates="drop"
+)
+
+print("\nOUTPUT – STEP 5")
+print("----------------")
+print("New descriptive variables:")
+print("- AgeGroup")
+print("- DistanceGroup")
+print("- WorkloadGroup")
+
+display(
+    df[[
+        "Age",
+        "AgeGroup",
+        "Distance from Residence to Work",
+        "DistanceGroup",
+        WORKLOAD,
+        "WorkloadGroup"
+    ]].head()
+)
+
+print(
+    "\nInterpretation:"
+    "\nThe derived groups make numerical variables easier to compare "
+    "without replacing the original variables."
+)
+
+
+# ============================================================
+# STEP 6 – CREATE THE CLASSIFICATION TARGET
+# ============================================================
+
+THRESHOLD = 8
+
+df["High_Absenteeism"] = (
+    df[TARGET] > THRESHOLD
+).astype(int)
+
+class_counts = df["High_Absenteeism"].value_counts().sort_index()
+
+class_percent = (
+    df["High_Absenteeism"]
+    .value_counts(normalize=True)
+    .sort_index()
+    .mul(100)
+    .round(2)
+)
+
+print("\nOUTPUT – STEP 6")
+print("----------------")
+print(f"Classification threshold: more than {THRESHOLD} hours")
+
+print("\nClass counts:")
+display(
+    class_counts.rename({
+        0: "Lower Absenteeism",
+        1: "Higher Absenteeism"
+    }).to_frame("Records")
+)
+
+print("\nClass percentages:")
+display(
+    class_percent.rename({
+        0: "Lower Absenteeism",
+        1: "Higher Absenteeism"
+    }).to_frame("Percentage")
+)
+
+print(
+    "\nInterpretation:"
+    f"\nA record with more than {THRESHOLD} absenteeism hours is classified "
+    "as higher absenteeism. This is an analytical threshold for this project, "
+    "not a universal HR policy."
+)
+
+
+# ============================================================
+# STEP 7 – TARGET LEAKAGE CHECK
+# ============================================================
+
+excluded_columns = [TARGET, "High_Absenteeism", "ID"]
+
+print("\nOUTPUT – STEP 7")
+print("----------------")
+print("Excluded from model predictors:")
+for column in excluded_columns:
+    print("-", column)
+
+print(
+    "\nInterpretation:"
+    "\nThe original absenteeism-hours variable is the source of the classification "
+    "target, so including it as a predictor would leak the outcome into the model. "
+    "ID is excluded because it is an identifier."
+)
+
+
+# ============================================================
+# STEP 8 – OVERALL ABSENTEEISM STATISTICS
+# ============================================================
+
+target = df[TARGET]
+
+summary_table = pd.DataFrame({
+    "Statistic": [
+        "Number of records",
+        "Total absenteeism hours",
+        "Mean",
+        "Median",
+        "Standard deviation",
+        "Minimum",
+        "Q1",
+        "Q3",
+        "Maximum"
+    ],
+    "Value": [
+        len(target),
+        target.sum(),
+        target.mean(),
+        target.median(),
+        target.std(),
+        target.min(),
+        target.quantile(0.25),
+        target.quantile(0.75),
+        target.max()
+    ]
+})
+
+summary_table["Value"] = summary_table["Value"].round(2)
+
+print("\nOUTPUT – STEP 8")
+print("----------------")
+display(summary_table)
+
+print(
+    "\nInterpretation:"
+    f"\nThe dataset contains {len(target)} records and "
+    f"{target.sum():.0f} total recorded absence hours. The mean is "
+    f"{target.mean():.2f} hours compared with a median of "
+    f"{target.median():.2f} hours, indicating a right-skewed distribution."
+)
+
+
+# ============================================================
+# STEP 9 – ABSENCE REASON ANALYSIS
+# ============================================================
+
+reason_avg = (
+    df.groupby("Reason for absence")[TARGET]
+    .mean()
+    .sort_values(ascending=False)
+)
+
+reason_count = (
+    df["Reason for absence"]
+    .value_counts()
+    .sort_index()
+)
+
+reason_table = pd.DataFrame({
+    "Average absenteeism hours": reason_avg,
+    "Number of records": reason_count
+}).sort_values(
+    "Average absenteeism hours",
+    ascending=False
+)
+
+print("\nOUTPUT – STEP 9")
+print("----------------")
+display(reason_table.head(10).round(2))
+
+top_reason = reason_avg.index[0]
+top_reason_value = reason_avg.iloc[0]
+
+print(
+    "\nInterpretation:"
+    f"\nReason code {top_reason} has the highest average recorded "
+    f"absence at approximately {top_reason_value:.2f} hours per record. "
+    "This is an association with a recorded reason category, not proof of causation."
+)
+
+
+# ============================================================
+# STEP 10 – MONTH, DAY AND SEASON ANALYSIS
+# ============================================================
+
+month_avg = (
+    df.groupby("Month of absence")[TARGET]
+    .mean()
+    .sort_index()
+)
+
+day_avg = (
+    df.groupby("Day of the week")[TARGET]
+    .mean()
+    .sort_index()
+)
+
+season_avg = (
+    df.groupby("Seasons")[TARGET]
+    .mean()
+    .sort_index()
+)
+
+print("\nOUTPUT – STEP 10")
+print("-----------------")
+
+print("Average absenteeism by month:")
+display(month_avg.round(2).to_frame("Average hours"))
+
+print("Average absenteeism by day:")
+display(day_avg.round(2).to_frame("Average hours"))
+
+print("Average absenteeism by season:")
+display(season_avg.round(2).to_frame("Average hours"))
+
+highest_month = month_avg.idxmax()
+highest_day = day_avg.idxmax()
+highest_season = season_avg.idxmax()
+
+print(
+    "\nInterpretation:"
+    f"\nMonth code {highest_month}, day code {highest_day} and season code "
+    f"{highest_season} have the highest average recorded absenteeism in "
+    "their respective comparisons. These patterns can help with staffing reviews."
+)
+
+
+# ============================================================
+# STEP 11 – WORKLOAD AND COMMUTING ANALYSIS
+# ============================================================
+
+operational_columns = [
+    WORKLOAD,
+    "Transportation expense",
+    "Distance from Residence to Work",
+    "Service time"
+]
+
+correlation = (
+    df[operational_columns + [TARGET]]
+    .corr()[TARGET]
+    .sort_values(ascending=False)
+)
+
+print("\nOUTPUT – STEP 11")
+print("-----------------")
+print("Correlation with absenteeism hours:")
+display(correlation.round(3).to_frame("Correlation"))
+
+print("Average absenteeism by workload group:")
+display(
+    df.groupby("WorkloadGroup", observed=True)[TARGET]
+    .mean()
+    .round(2)
+    .to_frame("Average hours")
+)
+
+print("Average absenteeism by distance group:")
+display(
+    df.groupby("DistanceGroup", observed=True)[TARGET]
+    .mean()
+    .round(2)
+    .to_frame("Average hours")
+)
+
+workload_corr = df[WORKLOAD].corr(target)
+
+print(
+    "\nInterpretation:"
+    f"\nThe correlation between workload and absenteeism is "
+    f"{workload_corr:.3f}. The result is descriptive and does not establish "
+    "that workload or commuting causes absence."
+)
+
+
+# ============================================================
+# STEP 12 – EMPLOYEE CHARACTERISTICS
+# ============================================================
+
+profile_columns = [
+    "Age",
+    "Weight",
+    "Height",
+    "Body mass index"
+]
+
+print("\nOUTPUT – STEP 12")
+print("-----------------")
+
+print("Workforce profile statistics:")
+display(df[profile_columns].describe().T.round(2))
+
+print("Average absenteeism by age group:")
+display(
+    df.groupby("AgeGroup", observed=True)[TARGET]
+    .mean()
+    .round(2)
+    .to_frame("Average hours")
+)
+
+print("Social drinker percentages:")
+display(
+    df["Social drinker"]
+    .value_counts(normalize=True)
+    .mul(100)
+    .round(2)
+    .to_frame("Percentage")
+)
+
+print("Social smoker percentages:")
+display(
+    df["Social smoker"]
+    .value_counts(normalize=True)
+    .mul(100)
+    .round(2)
+    .to_frame("Percentage")
+)
+
+print(
+    "\nInterpretation:"
+    "\nEmployee characteristics provide descriptive context for the dataset. "
+    "They should not be interpreted as medical or causal explanations for absenteeism."
+)
+
+
+# ============================================================
+# STEP 13 – HIGH VS LOWER ABSENTEEISM COMPARISON
+# ============================================================
+
+comparison_columns = [
+    "Age",
+    "Distance from Residence to Work",
+    WORKLOAD,
+    "Service time",
+    "Transportation expense",
+    "Body mass index"
+]
+
+group_comparison = (
+    df.groupby("High_Absenteeism")[comparison_columns]
+    .mean()
+    .round(2)
+)
+
+group_comparison.index = [
+    "Lower Absenteeism",
+    "Higher Absenteeism"
+]
+
+print("\nOUTPUT – STEP 13")
+print("-----------------")
+display(group_comparison)
+
+print(
+    "\nInterpretation:"
+    "\nThe comparison shows how average workforce and operational measures "
+    "differ between the lower- and higher-absence groups."
+)
+
+
+# ============================================================
+# STEP 14 – CREATE CHARTS FOLDER
+# ============================================================
+
+os.makedirs("charts", exist_ok=True)
+
+print("\nOUTPUT – STEP 14")
+print("-----------------")
+print("The charts folder has been created.")
+print("Figures will be saved automatically in this folder.")
+
+
+# ============================================================
+# STEP 15 – FIGURE 1: ABSENTEEISM BY REASON
+# ============================================================
+
+plt.figure(figsize=(10, 5))
+
+plot_reason = reason_avg.head(15).sort_values()
+
+plt.bar(
+    plot_reason.index.astype(str),
+    plot_reason.values
+)
+
+plt.xlabel("Reason code")
+plt.ylabel("Average absenteeism hours")
+plt.title("Figure 1: Average Absenteeism Hours by Reason for Absence")
+plt.xticks(rotation=45)
+plt.tight_layout()
+
+plt.savefig(
+    "charts/figure_1_absenteeism_by_reason.png",
+    dpi=220,
+    bbox_inches="tight"
+)
+
+plt.show()
+
+print("\nOUTPUT – STEP 15 / FIGURE 1")
+print("----------------------------")
+print(
+    f"Reason code {top_reason} has the highest average absenteeism "
+    f"among the recorded reason categories."
+)
+
+
+# ============================================================
+# STEP 16 – FIGURE 2: DISTRIBUTION OF ABSENTEEISM HOURS
+# ============================================================
+
+plt.figure(figsize=(8, 5))
+
+plt.hist(
+    target,
+    bins=25
+)
+
+plt.xlabel("Absenteeism hours")
+plt.ylabel("Number of records")
+plt.title("Figure 2: Distribution of Absenteeism Hours")
+plt.tight_layout()
+
+plt.savefig(
+    "charts/figure_2_absenteeism_distribution.png",
+    dpi=220,
+    bbox_inches="tight"
+)
+
+plt.show()
+
+print("\nOUTPUT – STEP 16 / FIGURE 2")
+print("----------------------------")
+print(
+    "The distribution is concentrated at lower absence values, "
+    "with a smaller number of longer absence observations."
+)
+
+
+# ============================================================
+# STEP 17 – FIGURE 3: ABSENTEEISM BY DAY
+# ============================================================
+
+plt.figure(figsize=(7, 5))
+
+plt.bar(
+    day_avg.index.astype(str),
+    day_avg.values
+)
+
+plt.xlabel("Day-of-week code")
+plt.ylabel("Average absenteeism hours")
+plt.title("Figure 3: Average Absenteeism Hours by Day of the Week")
+plt.tight_layout()
+
+plt.savefig(
+    "charts/figure_3_absenteeism_by_day.png",
+    dpi=220,
+    bbox_inches="tight"
+)
+
+plt.show()
+
+print("\nOUTPUT – STEP 17 / FIGURE 3")
+print("----------------------------")
+print(
+    f"Day code {highest_day} has the highest average recorded absenteeism "
+    "in the weekday comparison."
+)
+
+
+# ============================================================
+# STEP 18 – FIGURE 4: WORKLOAD VS ABSENTEEISM
+# ============================================================
+
+plt.figure(figsize=(8, 5))
+
+plt.scatter(
+    df[WORKLOAD],
+    target,
+    alpha=0.6
+)
+
+plt.xlabel("Work load average per day")
+plt.ylabel("Absenteeism hours")
+plt.title("Figure 4: Work Load Average per Day vs Absenteeism Hours")
+plt.tight_layout()
+
+plt.savefig(
+    "charts/figure_4_workload_vs_absenteeism.png",
+    dpi=220,
+    bbox_inches="tight"
+)
+
+plt.show()
+
+print("\nOUTPUT – STEP 18 / FIGURE 4")
+print("----------------------------")
+print(
+    f"The workload-to-absenteeism correlation is {workload_corr:.3f}. "
+    "The chart visualizes this relationship without making a causal claim."
+)
+
+
+# ============================================================
+# STEP 19 – FIGURE 5: ABSENTEEISM BY SEASON
+# ============================================================
+
+season_codes = sorted(
+    df["Seasons"].dropna().unique()
+)
+
+season_data = [
+    df.loc[df["Seasons"] == season, TARGET]
+    for season in season_codes
+]
+
+plt.figure(figsize=(7, 5))
+
+plt.boxplot(
+    season_data,
+    tick_labels=[str(season) for season in season_codes]
+)
+
+plt.xlabel("Season code")
+plt.ylabel("Absenteeism hours")
+plt.title("Figure 5: Absenteeism Hours by Season")
+plt.tight_layout()
+
+plt.savefig(
+    "charts/figure_5_absenteeism_by_season.png",
+    dpi=220,
+    bbox_inches="tight"
+)
+
+plt.show()
+
+print("\nOUTPUT – STEP 19 / FIGURE 5")
+print("----------------------------")
+print(
+    "The box plot compares the distribution and spread of absenteeism "
+    "across the available season codes."
+)
+
+
+# ============================================================
+# STEP 20 – FIGURE 6: LOWER VS HIGHER ABSENTEEISM
+# ============================================================
+
+group_mean = (
+    df.groupby("High_Absenteeism")[TARGET]
+    .mean()
+)
+
+plt.figure(figsize=(7, 5))
+
+plt.bar(
+    ["Lower absence", "Higher absence"],
+    [
+        group_mean.loc[0],
+        group_mean.loc[1]
+    ]
+)
+
+plt.ylabel("Average absenteeism hours")
+plt.title("Figure 6: Average Absenteeism by Classification Group")
+plt.tight_layout()
+
+plt.savefig(
+    "charts/figure_6_high_vs_lower.png",
+    dpi=220,
+    bbox_inches="tight"
+)
+
+plt.show()
+
+print("\nOUTPUT – STEP 20 / FIGURE 6")
+print("----------------------------")
+print(
+    f"Lower-absence records average {group_mean.loc[0]:.2f} hours, "
+    f"while higher-absence records average {group_mean.loc[1]:.2f} hours."
+)
+
+
+# ============================================================
+# STEP 21 – PREPARE MODEL PREDICTORS
+# ============================================================
+
+target_class = df["High_Absenteeism"]
+
+# Remove direct outcome information and the identifier.
+drop_columns = [
+    TARGET,
+    "High_Absenteeism"
+]
+
+# UCI may not return ID in the feature table.
+# Add it only when the column is actually present.
+if "ID" in df.columns:
+    drop_columns.append("ID")
+
+X = df.drop(columns=drop_columns)
+
+numeric_features = (
+    X.select_dtypes(include=np.number)
+    .columns
+    .tolist()
+)
+
+categorical_features = (
+    X.select_dtypes(exclude=np.number)
+    .columns
+    .tolist()
+)
+
+print("\nOUTPUT – STEP 21")
+print("-----------------")
+print("Number of predictors:", X.shape[1])
+print("ID column present in source:", "ID" in df.columns)
+print("ID used as predictor:", "ID" in X.columns)
+
+print("\nNumeric predictors:")
+print(numeric_features)
+
+print("\nCategorical predictors:")
+print(categorical_features)
+
+print(
+    "\nInterpretation:"
+    "\nThe model uses information available in the dataset while excluding "
+    "the original absenteeism outcome and the record identifier."
+)
+
+
+# ============================================================
+# STEP 22 – PREPROCESSING
+# ============================================================
+
+numeric_pipeline = Pipeline([
+    ("imputer", SimpleImputer(strategy="median")),
+    ("scaler", StandardScaler())
+])
+
+categorical_pipeline = Pipeline([
+    ("imputer", SimpleImputer(strategy="most_frequent")),
+    ("onehot", OneHotEncoder(handle_unknown="ignore"))
+])
+
+preprocessor = ColumnTransformer([
+    ("numeric", numeric_pipeline, numeric_features),
+    ("categorical", categorical_pipeline, categorical_features)
+])
+
+print("\nOUTPUT – STEP 22")
+print("-----------------")
+print("Numeric variables: median imputation + standardization")
+print("Categorical variables: one-hot encoding")
+
+
+# ============================================================
+# STEP 23 – TRAIN / TEST SPLIT
+# ============================================================
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    target_class,
+    test_size=0.20,
+    random_state=42,
+    stratify=target_class
+)
+
+print("\nOUTPUT – STEP 23")
+print("-----------------")
+print("Training records:", len(X_train))
+print("Testing records:", len(X_test))
+
+print(
+    "\nInterpretation:"
+    "\nAn 80/20 stratified split is used so that the two classes remain "
+    "reasonably represented in both training and testing data."
+)
+
+
+# ============================================================
+# STEP 24 – LOGISTIC REGRESSION
+# ============================================================
+
+logistic_model = Pipeline([
+    ("prep", preprocessor),
+    ("model", LogisticRegression(max_iter=2000))
+])
+
+logistic_model.fit(
+    X_train,
+    y_train
+)
+
+logistic_pred = logistic_model.predict(X_test)
+logistic_prob = logistic_model.predict_proba(X_test)[:, 1]
+
+print("\nOUTPUT – STEP 24")
+print("-----------------")
+print("Logistic Regression trained successfully.")
+
+print("Accuracy:",
+      round(accuracy_score(y_test, logistic_pred), 3))
+print("Precision:",
+      round(precision_score(y_test, logistic_pred, zero_division=0), 3))
+print("Recall:",
+      round(recall_score(y_test, logistic_pred, zero_division=0), 3))
+print("F1-score:",
+      round(f1_score(y_test, logistic_pred, zero_division=0), 3))
+print("AUC:",
+      round(roc_auc_score(y_test, logistic_prob), 3))
+
+
+# ============================================================
+# STEP 25 – RANDOM FOREST
+# ============================================================
+
+random_forest_model = Pipeline([
+    ("prep", preprocessor),
+    ("model", RandomForestClassifier(
+        n_estimators=200,
+        random_state=42,
+        class_weight="balanced"
+    ))
+])
+
+random_forest_model.fit(
+    X_train,
+    y_train
+)
+
+rf_pred = random_forest_model.predict(X_test)
+rf_prob = random_forest_model.predict_proba(X_test)[:, 1]
+
+print("\nOUTPUT – STEP 25")
+print("-----------------")
+print("Random Forest trained successfully.")
+
+print("Accuracy:",
+      round(accuracy_score(y_test, rf_pred), 3))
+print("Precision:",
+      round(precision_score(y_test, rf_pred, zero_division=0), 3))
+print("Recall:",
+      round(recall_score(y_test, rf_pred, zero_division=0), 3))
+print("F1-score:",
+      round(f1_score(y_test, rf_pred, zero_division=0), 3))
+print("AUC:",
+      round(roc_auc_score(y_test, rf_prob), 3))
+
+
+# ============================================================
+# STEP 26 – MODEL COMPARISON
+# ============================================================
+
+logistic_scores = {
+    "Model": "Logistic Regression",
+    "Accuracy": accuracy_score(y_test, logistic_pred),
+    "Precision": precision_score(y_test, logistic_pred, zero_division=0),
+    "Recall": recall_score(y_test, logistic_pred, zero_division=0),
+    "F1": f1_score(y_test, logistic_pred, zero_division=0),
+    "AUC": roc_auc_score(y_test, logistic_prob)
+}
+
+rf_scores = {
+    "Model": "Random Forest",
+    "Accuracy": accuracy_score(y_test, rf_pred),
+    "Precision": precision_score(y_test, rf_pred, zero_division=0),
+    "Recall": recall_score(y_test, rf_pred, zero_division=0),
+    "F1": f1_score(y_test, rf_pred, zero_division=0),
+    "AUC": roc_auc_score(y_test, rf_prob)
+}
+
+model_results = pd.DataFrame([
+    logistic_scores,
+    rf_scores
+])
+
+print("\nOUTPUT – STEP 26")
+print("-----------------")
+display(
+    model_results.set_index("Model").round(3)
+)
+
+best_row = model_results.sort_values(
+    by=["F1", "AUC"],
+    ascending=False
+).iloc[0]
+
+best_model_name = best_row["Model"]
+
+if best_model_name == "Logistic Regression":
+    best_model = logistic_model
+    best_pred = logistic_pred
+    best_prob = logistic_prob
+else:
+    best_model = random_forest_model
+    best_pred = rf_pred
+    best_prob = rf_prob
+
+print("Selected model:", best_model_name)
+
+print(
+    "\nInterpretation:"
+    "\nF1-score is used as the main selection measure because it balances "
+    "precision and recall. AUC is also considered when comparing model performance."
+)
+
+
+# ============================================================
+# STEP 27 – FIGURE 7: MODEL PERFORMANCE COMPARISON
+# ============================================================
+
+metrics_to_plot = [
+    "Accuracy",
+    "Precision",
+    "Recall",
+    "F1",
+    "AUC"
+]
+
+x = np.arange(len(metrics_to_plot))
+width = 0.35
+
+logistic_values = model_results.loc[
+    model_results["Model"] == "Logistic Regression",
+    metrics_to_plot
+].values.flatten()
+
+rf_values = model_results.loc[
+    model_results["Model"] == "Random Forest",
+    metrics_to_plot
+].values.flatten()
+
+plt.figure(figsize=(9, 5))
+
+plt.bar(
+    x - width / 2,
+    logistic_values,
+    width,
+    label="Logistic Regression"
+)
+
+plt.bar(
+    x + width / 2,
+    rf_values,
+    width,
+    label="Random Forest"
+)
+
+plt.xticks(
+    x,
+    metrics_to_plot
+)
+
+plt.ylabel("Score")
+plt.ylim(0, 1)
+plt.title("Figure 7: Classification Model Performance Comparison")
+plt.legend()
+plt.tight_layout()
+
+plt.savefig(
+    "charts/figure_7_model_comparison.png",
+    dpi=220,
+    bbox_inches="tight"
+)
+
+plt.show()
+
+print("\nOUTPUT – STEP 27 / FIGURE 7")
+print("----------------------------")
+print(
+    "The model-performance chart compares accuracy, precision, recall, "
+    "F1-score and AUC for the two models."
+)
+
+
+# ============================================================
+# STEP 28 – CLASSIFICATION REPORT
+# ============================================================
+
+classification_results = classification_report(
+    y_test,
+    best_pred,
+    target_names=[
+        "Lower Absenteeism",
+        "Higher Absenteeism"
+    ],
+    zero_division=0
+)
+
+print("\nOUTPUT – STEP 28")
+print("-----------------")
+print(classification_results)
+
+print(
+    "Interpretation:"
+    "\nThe classification report provides class-level precision, recall "
+    "and F1-score in addition to overall model performance."
+)
+
+
+# ============================================================
+# STEP 29 – FIGURE 8: CONFUSION MATRIX
+# ============================================================
+
+cm = confusion_matrix(
+    y_test,
+    best_pred
+)
+
+print("\nOUTPUT – STEP 29 / CONFUSION MATRIX")
+print("------------------------------------")
+print(cm)
+
+fig, ax = plt.subplots(figsize=(6, 5))
+
+ConfusionMatrixDisplay(
+    confusion_matrix=cm,
+    display_labels=[
+        "Lower Absence",
+        "Higher Absence"
+    ]
+).plot(ax=ax)
+
+ax.set_title(
+    "Figure 8: Confusion Matrix – Higher Absenteeism"
+)
+
+plt.tight_layout()
+
+plt.savefig(
+    "charts/figure_8_confusion_matrix.png",
+    dpi=220,
+    bbox_inches="tight"
+)
+
+plt.show()
+
+tn, fp, fn, tp = cm.ravel()
+
+print("\nBusiness interpretation:")
+print(
+    f"True negatives = {tn}, true positives = {tp}, "
+    f"false positives = {fp}, false negatives = {fn}."
+)
+
+print(
+    f"A false negative means a higher-absence record was missed "
+    f"({fn} cases). A false positive means a lower-absence record "
+    f"was incorrectly flagged as higher absence ({fp} cases)."
+)
+
+
+# ============================================================
+# STEP 30 – RANDOM FOREST FEATURE IMPORTANCE
+# ============================================================
+
+rf_model = random_forest_model.named_steps["model"]
+
+rf_feature_names = (
+    random_forest_model
+    .named_steps["prep"]
+    .get_feature_names_out()
+)
+
+feature_importance = pd.Series(
+    rf_model.feature_importances_,
+    index=rf_feature_names
+).sort_values(
+    ascending=False
+)
+
+top_features = feature_importance.head(15)
+
+print("\nOUTPUT – STEP 30")
+print("-----------------")
+print("Top 15 Random Forest features:")
+display(
+    top_features.to_frame("Importance").round(4)
+)
+
+plt.figure(figsize=(9, 6))
+
+top_features.sort_values().plot(
+    kind="barh"
+)
+
+plt.xlabel("Importance")
+plt.ylabel("Feature")
+plt.title("Figure 9: Top Random Forest Feature Importance")
+plt.tight_layout()
+
+plt.savefig(
+    "charts/figure_9_feature_importance.png",
+    dpi=220,
+    bbox_inches="tight"
+)
+
+plt.show()
+
+print(
+    "\nInterpretation:"
+    "\nFeature importance identifies variables that contributed strongly "
+    "to the Random Forest's predictions. It does not prove causation."
+)
+
+
+# ============================================================
+# STEP 31 – FINAL RESULTS TABLE
+# ============================================================
+
+final_results = pd.DataFrame({
+    "Measure": [
+        "Total records",
+        "Total absenteeism hours",
+        "Mean absenteeism hours",
+        "Median absenteeism hours",
+        "Maximum absenteeism hours",
+        "Higher-absence records",
+        "Selected model",
+        "Accuracy",
+        "Precision",
+        "Recall",
+        "F1-score",
+        "AUC"
+    ],
+    "Value": [
+        len(df),
+        round(target.sum(), 2),
+        round(target.mean(), 2),
+        round(target.median(), 2),
+        round(target.max(), 2),
+        int(df["High_Absenteeism"].sum()),
+        best_model_name,
+        round(accuracy_score(y_test, best_pred), 3),
+        round(precision_score(y_test, best_pred, zero_division=0), 3),
+        round(recall_score(y_test, best_pred, zero_division=0), 3),
+        round(f1_score(y_test, best_pred, zero_division=0), 3),
+        round(roc_auc_score(y_test, best_prob), 3)
+    ]
+})
+
+print("\nOUTPUT – STEP 31")
+print("-----------------")
+display(final_results)
+
+
+# ============================================================
+# STEP 32 – FINAL BUSINESS INTERPRETATION
+# ============================================================
+
+print("\nOUTPUT – STEP 32")
+print("-----------------")
+print("FINAL BUSINESS INTERPRETATION")
+print("------------------------------")
+
+print(
+    f"1. The dataset contains {len(df)} workplace absenteeism records."
+)
+
+print(
+    f"2. Total absenteeism is {target.sum():.0f} hours, with a mean "
+    f"of {target.mean():.2f} hours and a median of {target.median():.2f} hours."
+)
+
+print(
+    f"3. The maximum recorded absence is {target.max():.0f} hours, "
+    "so a smaller number of long events can be important for workforce planning."
+)
+
+print(
+    f"4. Reason code {top_reason} has the highest average recorded "
+    f"absence at approximately {top_reason_value:.2f} hours."
+)
+
+print(
+    f"5. The highest average values occur in month code {highest_month}, "
+    f"day code {highest_day} and season code {highest_season} within "
+    "their respective comparisons."
+)
+
+print(
+    f"6. Workload correlation with absenteeism is {workload_corr:.3f}. "
+    "This is an association and should not be interpreted as causation."
+)
+
+print(
+    f"7. The selected model is {best_model_name}. Its accuracy is "
+    f"{accuracy_score(y_test, best_pred):.3f}, precision is "
+    f"{precision_score(y_test, best_pred, zero_division=0):.3f}, recall is "
+    f"{recall_score(y_test, best_pred, zero_division=0):.3f}, F1-score is "
+    f"{f1_score(y_test, best_pred, zero_division=0):.3f}, and AUC is "
+    f"{roc_auc_score(y_test, best_prob):.3f}."
+)
+
+print(
+    "8. The model is intended as decision-support information for "
+    "workforce planning, not as an automatic attendance decision."
+)
+
+
+# ============================================================
+# STEP 33 – BUSINESS RECOMMENDATIONS
+# ============================================================
+
+recommendations = [
+    "Use observed monthly, weekday and seasonal patterns when reviewing staffing buffers.",
+    "Include workload measures when planning workforce capacity and scheduling.",
+    "Maintain a simple absenteeism dashboard covering hours, reasons and high-absence counts.",
+    "Use the classification model as an early-warning planning signal with managerial review.",
+    "Review commuting-related patterns carefully rather than assuming employee fault.",
+    "Use analytical findings responsibly because the dataset represents one specific courier-company context."
+]
+
+print("\nOUTPUT – STEP 33")
+print("-----------------")
+
+for i, recommendation in enumerate(recommendations, start=1):
+    print(f"{i}. {recommendation}")
+
+print(
+    "\nInterpretation:"
+    "\nThe recommendations connect the analytical findings with practical "
+    "workforce-planning actions."
+)
+
+
+# ============================================================
+# STEP 34 – SAVE DATA, RESULTS AND CHARTS
+# ============================================================
+
+df.to_csv(
+    "MGNM801_Absenteeism_Analytical_Dataset.csv",
+    index=False
+)
+
+model_results.to_csv(
+    "MGNM801_Model_Results.csv",
+    index=False
+)
+
+final_results.to_csv(
+    "MGNM801_Final_Results.csv",
+    index=False
+)
+
+print("\nOUTPUT – STEP 34")
+print("-----------------")
+print("Saved analytical dataset:")
+print("MGNM801_Absenteeism_Analytical_Dataset.csv")
+
+print("\nSaved model results:")
+print("MGNM801_Model_Results.csv")
+
+print("\nSaved final results:")
+print("MGNM801_Final_Results.csv")
+
+print("\nSaved figures:")
+for file_name in sorted(os.listdir("charts")):
+    print("-", file_name)
+
+
+# ============================================================
+# STEP 35 – FINAL CHECK
+# ============================================================
+
+checks = {
+    "Dataset loaded": len(df) > 0,
+    "Target exists": TARGET in df.columns,
+    "Classification target exists": "High_Absenteeism" in df.columns,
+    "Workload column found": WORKLOAD in df.columns,
+    "Outcome excluded from predictors": TARGET not in X.columns,
+    "ID excluded from predictors": "ID" not in X.columns,
+    "Model trained": best_model is not None,
+    "Confusion matrix created": cm.shape == (2, 2),
+    "Charts folder created": os.path.exists("charts"),
+    "Nine figures generated": len(os.listdir("charts")) >= 9
+}
+
+print("\nOUTPUT – STEP 35")
+print("-----------------")
+print("FINAL PROJECT CHECK")
+
+for check_name, check_result in checks.items():
+    print(
+        f"{check_name}: "
+        f"{'PASS' if check_result else 'CHECK'}"
+    )
+
+print(
+    "\nPROJECT COMPLETE"
+    "\n----------------"
+    "\nThe analysis has finished chronologically from data acquisition "
+    "through descriptive analysis, visualizations, predictive modelling, "
+    "evaluation, interpretation and recommendations."
+)
+
+
+# ============================================================
+# END OF COMPLETE MGNM801 COLAB CODE
+# ============================================================
