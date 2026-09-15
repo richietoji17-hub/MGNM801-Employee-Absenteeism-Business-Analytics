@@ -1,0 +1,493 @@
+# ============================================================
+# MGNM801 – ABSENTEEISM BUSINESS ANALYTICS PROJECT
+# SHORT + COMPLETE COLAB CODE
+# ============================================================
+%pip -q install ucimlrepo
+
+import os, numpy as np, pandas as pd
+import matplotlib.pyplot as plt
+from ucimlrepo import fetch_ucirepo
+
+from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    roc_auc_score, confusion_matrix, ConfusionMatrixDisplay,
+    classification_report
+)
+
+# ============================================================
+# 1. LOAD GENUINE UCI DATA
+# ============================================================
+
+data = fetch_ucirepo(id=445)
+df = pd.concat(
+    [data.data.features.copy(), data.data.targets.copy()],
+    axis=1
+)
+df.columns = df.columns.str.strip()
+
+TARGET = "Absenteeism time in hours"
+WORKLOAD = "Work load Average/day"
+
+print("Dataset shape:", df.shape)
+display(df.head())
+display(df.describe().T.round(2))
+
+# ============================================================
+# 2. DATA QUALITY
+# ============================================================
+
+df[TARGET] = pd.to_numeric(df[TARGET], errors="coerce")
+df[WORKLOAD] = pd.to_numeric(df[WORKLOAD], errors="coerce")
+
+print("\nMissing values:", df.isnull().sum().sum())
+print("Duplicate rows:", df.duplicated().sum())
+
+# ============================================================
+# 3. FEATURE ENGINEERING
+# ============================================================
+
+df["AgeGroup"] = pd.cut(
+    df["Age"],
+    [17,25,35,45,55,100],
+    labels=["18-25","26-35","36-45","46-55","56+"]
+)
+
+df["DistanceGroup"] = pd.cut(
+    df["Distance from Residence to Work"],
+    [-np.inf,10,25,50,np.inf],
+    labels=["Short","Moderate","Long","Very long"]
+)
+
+df["WorkloadGroup"] = pd.qcut(
+    df[WORKLOAD], 4, duplicates="drop"
+)
+
+# ============================================================
+# 4. HIGH ABSENTEEISM CLASSIFICATION
+# ============================================================
+
+THRESHOLD = 8
+
+df["High_Absenteeism"] = (
+    df[TARGET] > THRESHOLD
+).astype(int)
+
+print("\nAbsenteeism classification:")
+display(
+    df["High_Absenteeism"]
+    .value_counts()
+    .rename({0:"Lower Absenteeism",1:"Higher Absenteeism"})
+    .to_frame("Records")
+)
+
+# ============================================================
+# 5. BASIC ABSENTEEISM ANALYSIS
+# ============================================================
+
+target = df[TARGET]
+
+summary = pd.Series({
+    "Records": len(df),
+    "Total absenteeism hours": target.sum(),
+    "Mean": target.mean(),
+    "Median": target.median(),
+    "Std. deviation": target.std(),
+    "Minimum": target.min(),
+    "Q1": target.quantile(.25),
+    "Q3": target.quantile(.75),
+    "Maximum": target.max()
+})
+
+print("\nOverall absenteeism:")
+display(summary.round(2).to_frame("Value"))
+
+# ============================================================
+# 6. REASON / MONTH / DAY / SEASON ANALYSIS
+# ============================================================
+
+reason_avg = df.groupby("Reason for absence")[TARGET].mean().sort_values(ascending=False)
+
+reason_table = pd.DataFrame({
+    "Average hours": reason_avg,
+    "Records": df["Reason for absence"].value_counts()
+}).sort_values("Average hours", ascending=False)
+
+month_avg = df.groupby("Month of absence")[TARGET].mean()
+day_avg = df.groupby("Day of the week")[TARGET].mean()
+season_avg = df.groupby("Seasons")[TARGET].mean()
+
+print("\nTop reasons:")
+display(reason_table.head(10).round(2))
+
+print("Highest month:", month_avg.idxmax())
+print("Highest day:", day_avg.idxmax())
+print("Highest season:", season_avg.idxmax())
+
+# ============================================================
+# 7. WORKLOAD / DISTANCE / EMPLOYEE ANALYSIS
+# ============================================================
+
+print("\nCorrelation with absenteeism:")
+display(
+    df[
+        [WORKLOAD, "Transportation expense",
+         "Distance from Residence to Work",
+         "Service time", TARGET]
+    ].corr()[TARGET].sort_values(ascending=False).round(3)
+)
+
+print("\nAbsenteeism by workload:")
+display(
+    df.groupby("WorkloadGroup", observed=True)[TARGET]
+    .mean().round(2).to_frame("Average hours")
+)
+
+print("\nAbsenteeism by distance:")
+display(
+    df.groupby("DistanceGroup", observed=True)[TARGET]
+    .mean().round(2).to_frame("Average hours")
+)
+
+# ============================================================
+# 8. HIGH VS LOWER ABSENTEEISM
+# ============================================================
+
+comparison_cols = [
+    "Age",
+    "Distance from Residence to Work",
+    WORKLOAD,
+    "Service time",
+    "Transportation expense",
+    "Body mass index"
+]
+
+comparison = df.groupby("High_Absenteeism")[comparison_cols].mean().round(2)
+comparison.index = ["Lower Absenteeism", "Higher Absenteeism"]
+
+print("\nLower vs higher absenteeism:")
+display(comparison)
+
+# ============================================================
+# 9. CREATE CHARTS
+# ============================================================
+
+os.makedirs("charts", exist_ok=True)
+
+def save_plot(name):
+    plt.tight_layout()
+    plt.savefig(f"charts/{name}.png", dpi=220, bbox_inches="tight")
+    plt.show()
+
+# Figure 1 – Reason
+plt.figure(figsize=(10,5))
+reason_avg.head(15).sort_values().plot(kind="bar")
+plt.xlabel("Reason code")
+plt.ylabel("Average absenteeism hours")
+plt.title("Figure 1: Average Absenteeism by Reason")
+save_plot("figure_1_absenteeism_by_reason")
+
+# Figure 2 – Distribution
+plt.figure(figsize=(8,5))
+plt.hist(target, bins=25)
+plt.xlabel("Absenteeism hours")
+plt.ylabel("Number of records")
+plt.title("Figure 2: Distribution of Absenteeism Hours")
+save_plot("figure_2_absenteeism_distribution")
+
+# Figure 3 – Day
+plt.figure(figsize=(7,5))
+day_avg.plot(kind="bar")
+plt.xlabel("Day-of-week code")
+plt.ylabel("Average absenteeism hours")
+plt.title("Figure 3: Average Absenteeism by Day")
+save_plot("figure_3_absenteeism_by_day")
+
+# Figure 4 – Workload
+plt.figure(figsize=(8,5))
+plt.scatter(df[WORKLOAD], target, alpha=.6)
+plt.xlabel("Work load average per day")
+plt.ylabel("Absenteeism hours")
+plt.title("Figure 4: Workload vs Absenteeism")
+save_plot("figure_4_workload_vs_absenteeism")
+
+# Figure 5 – Season
+seasons = sorted(df["Seasons"].dropna().unique())
+plt.figure(figsize=(7,5))
+plt.boxplot(
+    [df.loc[df["Seasons"]==s,TARGET] for s in seasons],
+    tick_labels=[str(s) for s in seasons]
+)
+plt.xlabel("Season code")
+plt.ylabel("Absenteeism hours")
+plt.title("Figure 5: Absenteeism by Season")
+save_plot("figure_5_absenteeism_by_season")
+
+# Figure 6 – Classification
+group_mean = df.groupby("High_Absenteeism")[TARGET].mean()
+
+plt.figure(figsize=(7,5))
+plt.bar(
+    ["Lower absence","Higher absence"],
+    [group_mean[0],group_mean[1]]
+)
+plt.ylabel("Average absenteeism hours")
+plt.title("Figure 6: Lower vs Higher Absenteeism")
+save_plot("figure_6_high_vs_lower")
+
+# ============================================================
+# 10. MACHINE LEARNING DATA
+# ============================================================
+
+y = df["High_Absenteeism"]
+
+drop_cols = [TARGET, "High_Absenteeism"]
+if "ID" in df.columns:
+    drop_cols.append("ID")
+
+X = df.drop(columns=drop_cols)
+
+num_cols = X.select_dtypes(include=np.number).columns.tolist()
+cat_cols = X.select_dtypes(exclude=np.number).columns.tolist()
+
+preprocessor = ColumnTransformer([
+    ("num", Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scale", StandardScaler())
+    ]), num_cols),
+
+    ("cat", Pipeline([
+        ("imputer", SimpleImputer(strategy="most_frequent")),
+        ("onehot", OneHotEncoder(handle_unknown="ignore"))
+    ]), cat_cols)
+])
+
+X_train,X_test,y_train,y_test = train_test_split(
+    X,y,test_size=.20,random_state=42,stratify=y
+)
+
+# ============================================================
+# 11. TRAIN TWO MODELS
+# ============================================================
+
+models = {
+    "Logistic Regression": LogisticRegression(max_iter=2000),
+    "Random Forest": RandomForestClassifier(
+        n_estimators=200,
+        random_state=42,
+        class_weight="balanced"
+    )
+}
+
+results = []
+predictions = {}
+
+for name, model in models.items():
+
+    pipe = Pipeline([
+        ("prep", preprocessor),
+        ("model", model)
+    ])
+
+    pipe.fit(X_train,y_train)
+
+    pred = pipe.predict(X_test)
+    prob = pipe.predict_proba(X_test)[:,1]
+
+    predictions[name] = (pipe,pred,prob)
+
+    results.append({
+        "Model": name,
+        "Accuracy": accuracy_score(y_test,pred),
+        "Precision": precision_score(y_test,pred,zero_division=0),
+        "Recall": recall_score(y_test,pred,zero_division=0),
+        "F1": f1_score(y_test,pred,zero_division=0),
+        "AUC": roc_auc_score(y_test,prob)
+    })
+
+model_results = pd.DataFrame(results)
+
+print("\nMODEL PERFORMANCE")
+display(model_results.set_index("Model").round(3))
+
+# ============================================================
+# 12. SELECT BEST MODEL
+# ============================================================
+
+best = model_results.sort_values(
+    ["F1","AUC"], ascending=False
+).iloc[0]
+
+best_name = best["Model"]
+best_model,best_pred,best_prob = predictions[best_name]
+
+print("Selected model:", best_name)
+
+# Figure 7 – Model comparison
+metrics = ["Accuracy","Precision","Recall","F1","AUC"]
+
+model_results.set_index("Model")[metrics].plot(
+    kind="bar", figsize=(9,5)
+)
+
+plt.ylim(0,1)
+plt.ylabel("Score")
+plt.title("Figure 7: Model Performance Comparison")
+save_plot("figure_7_model_comparison")
+
+# ============================================================
+# 13. CLASSIFICATION REPORT + CONFUSION MATRIX
+# ============================================================
+
+print("\nCLASSIFICATION REPORT")
+print(
+    classification_report(
+        y_test,best_pred,
+        target_names=["Lower Absenteeism","Higher Absenteeism"],
+        zero_division=0
+    )
+)
+
+cm = confusion_matrix(y_test,best_pred)
+
+print("Confusion Matrix:")
+print(cm)
+
+ConfusionMatrixDisplay(
+    confusion_matrix=cm,
+    display_labels=["Lower Absence","Higher Absence"]
+).plot()
+
+plt.title("Figure 8: Confusion Matrix")
+save_plot("figure_8_confusion_matrix")
+
+# ============================================================
+# 14. RANDOM FOREST FEATURE IMPORTANCE
+# ============================================================
+
+rf_pipe = predictions["Random Forest"][0]
+
+rf = rf_pipe.named_steps["model"]
+names = rf_pipe.named_steps["prep"].get_feature_names_out()
+
+importance = pd.Series(
+    rf.feature_importances_, index=names
+).sort_values(ascending=False)
+
+print("\nTOP 15 FEATURES")
+display(importance.head(15).to_frame("Importance").round(4))
+
+importance.head(15).sort_values().plot(
+    kind="barh", figsize=(9,6)
+)
+
+plt.xlabel("Importance")
+plt.title("Figure 9: Top Random Forest Features")
+save_plot("figure_9_feature_importance")
+
+# ============================================================
+# 15. FINAL RESULTS
+# ============================================================
+
+final_results = pd.DataFrame({
+    "Measure": [
+        "Total records",
+        "Total absenteeism hours",
+        "Mean absenteeism hours",
+        "Median absenteeism hours",
+        "Maximum absenteeism hours",
+        "Higher-absence records",
+        "Selected model",
+        "Accuracy",
+        "Precision",
+        "Recall",
+        "F1-score",
+        "AUC"
+    ],
+    "Value": [
+        len(df),
+        round(target.sum(),2),
+        round(target.mean(),2),
+        round(target.median(),2),
+        round(target.max(),2),
+        int(df["High_Absenteeism"].sum()),
+        best_name,
+        round(accuracy_score(y_test,best_pred),3),
+        round(precision_score(y_test,best_pred,zero_division=0),3),
+        round(recall_score(y_test,best_pred,zero_division=0),3),
+        round(f1_score(y_test,best_pred,zero_division=0),3),
+        round(roc_auc_score(y_test,best_prob),3)
+    ]
+})
+
+print("\nFINAL RESULTS")
+display(final_results)
+
+# ============================================================
+# 16. BUSINESS RECOMMENDATIONS
+# ============================================================
+
+recommendations = [
+    "Use monthly, weekday and seasonal patterns for staffing planning.",
+    "Monitor workload when planning workforce capacity.",
+    "Maintain an absenteeism dashboard covering hours, reasons and high-absence counts.",
+    "Use the classification model as an early-warning planning signal.",
+    "Review commuting patterns carefully without assuming employee fault.",
+    "Use the findings as decision support rather than automatic attendance decisions."
+]
+
+print("\nBUSINESS RECOMMENDATIONS")
+for i,r in enumerate(recommendations,1):
+    print(f"{i}. {r}")
+
+# ============================================================
+# 17. SAVE OUTPUTS
+# ============================================================
+
+df.to_csv(
+    "MGNM801_Absenteeism_Analytical_Dataset.csv",
+    index=False
+)
+
+model_results.to_csv(
+    "MGNM801_Model_Results.csv",
+    index=False
+)
+
+final_results.to_csv(
+    "MGNM801_Final_Results.csv",
+    index=False
+)
+
+print("\nFiles saved successfully:")
+print("- MGNM801_Absenteeism_Analytical_Dataset.csv")
+print("- MGNM801_Model_Results.csv")
+print("- MGNM801_Final_Results.csv")
+print("- 9 figures in /charts")
+
+# ============================================================
+# 18. FINAL CHECK
+# ============================================================
+
+checks = {
+    "Dataset loaded": len(df)>0,
+    "Target exists": TARGET in df.columns,
+    "Classification target exists": "High_Absenteeism" in df.columns,
+    "Outcome excluded": TARGET not in X.columns,
+    "Model trained": best_model is not None,
+    "Confusion matrix": cm.shape==(2,2),
+    "Charts folder": os.path.exists("charts"),
+    "Nine figures": len(os.listdir("charts"))>=9
+}
+
+print("\nFINAL PROJECT CHECK")
+for k,v in checks.items():
+    print(f"{k}: {'PASS' if v else 'CHECK'}")
+
+print("\nPROJECT COMPLETE")
